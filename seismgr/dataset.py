@@ -257,7 +257,10 @@ class Data():
         """Takes a list and sets the frequency band attribute
         """
 
-        self.band = '{0[0]:.1f}_{0[1]:.1f}'.format(band)
+        if isinstance(band, str):
+            self.band = band
+        elif isinstance(band, list):
+            self.band = '{0[0]:.1f}_{0[1]:.1f}'.format(band)
 
     def n_stations(self):
         return np.int32(len(self.stations))
@@ -351,10 +354,40 @@ class RealData(Data):
             idx = self.trace_idx[station][component]
             return np.float32(self.traces[idx].data)
 
-    def get_matrix(self, stations=None, components=None, three_d=False):
+    def operational_mask(self, stations=None, components=None, three_d=False):
+        if not stations:
+            stations = self.stations
+
+        if not components:
+            components = self.components
+
+        n_stations = len(stations)
+        n_components = len(components)
+
+        if three_d:
+            dimensions = (n_stations)
+        elif not three_d:
+            dimensions = (n_stations * n_components)
+
+        op_mask = np.zeros(dimensions, dtype=np.bool_)
+        op_list = self.operational_list(stations=stations)
+        
+        s, c = 0, 0
+        for s in range(n_stations):
+            if op_list[s]:
+                if three_d:
+                    op_mask[s] = True
+                else:
+                    for c in range(n_components):
+                        op_mask[s * n_components + c] = True
+
+        return op_mask
+
+    def get_matrix(self, stations=None, components=None, three_d=False, operational=False):
         """Returns an ndarray for the given stations and components. If three_d
         is False, returns a 2D ndarray [stations*components, time]; if true,
         returns a 3D ndarray [stations, components, time]
+        operational returns the matrix that only contains data from operational stations
         """
 
         if not stations:
@@ -389,6 +422,10 @@ class RealData(Data):
                     matrix[s, c, :] = trace
                 elif not three_d:
                     matrix[s * n_components + c, :] = trace
+
+        if operational:
+            op_mask = self.operational_mask(stations=stations, components=components, three_d=three_d)
+            matrix = matrix[op_mask]
 
         return matrix
 
@@ -528,11 +565,11 @@ class DayData(RealData):
 
                 path = os.path.join(cfg.data, processing)
             else:
-                processing = 'filtered'
+                processing = self.band
                 if self.downsampled:
                     processing += '_dwn'
 
-                path = os.path.join(cfg.data, processing, self.band)
+                path = os.path.join(cfg.data, processing)
 
         return path
 
