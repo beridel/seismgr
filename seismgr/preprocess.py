@@ -336,13 +336,12 @@ def prefilter(network, station_idx=None):
                             network.components)
     _write_dirs(day_data)
 
-    for f in cfg.freq_bands:
-        # filtered downsampled
-        day_data = DayData(network.start_date,
-                                stations,
-                                network.components,
-                                [f[0], f[1]])
-        _write_dirs(day_data)
+    # filtered downsampled
+    day_data = DayData(network.start_date,
+                            stations,
+                            network.components,
+                            'filtered')
+    _write_dirs(day_data)
 
     # generate dates to preprocess
     dates = network.datelist()
@@ -386,13 +385,8 @@ def _prefilter(date, network, stations):
         unfiltered.write()
 
         """for f in cfg.freq_bands:
-            filtered = DayData(date, station, network.components)
 
-            filtered.traces = unfiltered.traces.copy()
-            filtered.operational = unfiltered.operational
-            filtered.loaded = True
-
-            # taper and filter
+                        # taper and filter
             filtered.traces.taper(
                 np.float32((cfg.sampling_rate / np.float32(f[0])) / filtered.traces[0].data.size),
                 type='cosine')
@@ -406,14 +400,19 @@ def _prefilter(date, network, stations):
             elif cfg.filter_type == 'lowpass':
                 filtered.traces.filter('lowpass', freq=np.float32(f[0]))
             """
-            filtered.traces.taper(
-                np.float32((cfg.sampling_rate / network.bands[idx][0]) / filtered.traces[0].data.size),
-                type='cosine')
-            filtered.traces.filter('bandpass',
-                freqmin=network.bands[idx][0], freqmax=network.bands[idx][1])
+        filtered = DayData(date, station, network.components)
+        filtered.traces = unfiltered.traces.copy()
+        filtered.operational = unfiltered.operational
+        filtered.loaded = True
 
-            filtered.set_band(f)
-            filtered.write()
+        filtered.traces.taper(
+            np.float32((cfg.sampling_rate / network.bands[idx][0]) / filtered.traces[0].data.size),
+            type='cosine')
+        filtered.traces.filter('bandpass',
+            freqmin=network.bands[idx][0], freqmax=network.bands[idx][1])
+
+        filtered.set_band('filtered')
+        filtered.write()
 
 
 def remove_spikes(day_data):
