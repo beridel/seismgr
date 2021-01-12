@@ -12,7 +12,7 @@ import traceback
 
 import ipdb
 
-def preprocess(station, channel, component, files, parallel=False):
+def preprocess(station, channel, component, files, parallel=False, remove_ir=False, client='IRIS'):
     if not isinstance(files, list):
         files = [files]
 
@@ -45,22 +45,24 @@ def preprocess(station, channel, component, files, parallel=False):
 
     start_date = obs.UTCDateTime(np.min(start_times)).date
     end_date = obs.UTCDateTime(np.max(end_times)).date
-    
+
+    print('Preprocessing {}:{} from {} to {}...'.format(station, channel, start_date, end_date))
+
     day_data = DayData(obs.UTCDateTime(np.min(start_times)).date, station, component)
     _write_dirs(day_data, raw=True)
-
     
+    start_timer = dt.datetime.now()
     dates = []
     date = start_date
     while date <= end_date:
         dates.append(date)
         date += dt.timedelta(days=1)
    
-    client = Client('IRIS')
+    client = Client(client)
     if parallel:
         #n_proc = np.min([len(dates), mp.cpu_count() / 2]) # takes a lot of memory
         pool = mp.Pool(processes=int(cfg.n_proc))
-        pool.map_async(partial(_preprocess_wrap, header=header, station=station, channel=channel, component=component, client=client), dates)
+        pool.map_async(partial(_preprocess_wrap, header=header, station=station, channel=channel, component=component, remove_ir=remove_ir, client=client), dates)
 
         pool.close()
         pool.join()
@@ -69,15 +71,18 @@ def preprocess(station, channel, component, files, parallel=False):
         for date in dates:
             _preprocess(date, header, station, channel, component, client)
 
+    #print('Finished reading headers for {}:{} in {}s'.format(station, channel, (dt.datetime.now() - start_timer).total_seconds()))
+    print('Done in {}s!'.format((dt.datetime.now() - start_timer).total_seconds()))
 
-def _preprocess_wrap(date, header, station, channel, component, client):
+
+def _preprocess_wrap(date, header, station, channel, component, remove_ir, client):
     try:
-        _preprocess(date, header, station, channel, component, client)
+        _preprocess(date, header, station, channel, component, remove_ir, client)
     except:
         print('%s: %s' % (date, traceback.format_exc()))
 
 
-def _preprocess(date, header, station, channel, component, client):
+def _preprocess(date, header, station, channel, component, remove_ir, client):
     start_timer = dt.datetime.now()
     start_comp = np.array([trace.stats['starttime'] < obs.UTCDateTime(date + dt.timedelta(days=1)) for trace in header.traces], dtype=np.bool)
     end_comp = np.array([trace.stats['endtime'] > obs.UTCDateTime(date) for trace in header.traces], dtype=np.bool)
@@ -174,10 +179,11 @@ def _preprocess(date, header, station, channel, component, client):
         to_write = obs.Stream()
         to_write.extend([merged])
         
-        inventory = client.get_stations(starttime=obs.UTCDateTime(date), endtime=obs.UTCDateTime(date + dt.timedelta(days=1)),
-            network=header_day.traces[0].stats['network'], sta=station, channel=header_day.traces[0].stats['channel'], level="response")
-        to_write.attach_response(inventory)
-        to_write.remove_response(zero_mean=True, pre_filt=[cfg.pre_min1, cfg.pre_min2, cfg.pre_max1, cfg.pre_max2], taper=True, taper_fraction=(1. / cfg.pre_min2) / 86400)
+        if remove_ir:
+            inventory = client.get_stations(starttime=obs.UTCDateTime(date), endtime=obs.UTCDateTime(date + dt.timedelta(days=1)),
+                network=header_day.traces[0].stats['network'], sta=station, channel=header_day.traces[0].stats['channel'], level="response")
+            to_write.attach_response(inventory)
+            to_write.remove_response(zero_mean=True, pre_filt=[cfg.pre_min1, cfg.pre_min2, cfg.pre_max1, cfg.pre_max2], taper=True, taper_fraction=(1. / cfg.pre_min2) / 86400)
 
         sampling_rate = 1. / delta
         if sampling_rate != cfg.sampling_rate:
@@ -374,11 +380,17 @@ def _prefilter(date, network, stations):
             continue
 
         for i in range(len(network.components)):
+            if 1. / unfiltered.traces[i].stats.delta != cfg.sampling_rate:
+                sampling_rate = 1. / unfiltered.traces[i].stats.delta
+                if sampling_rate.is_integer():
+                    unfiltered.traces[i].decimate(int(sampling_rate / cfg.sampling_rate))
+                else:
+                    print('Cannot perform simple decimation for {} {}:{} (now: {}Hz; target: {}Hz), skipping file!'.format(date, raw_data.station, raw_data.component, sampling_rate, cfg.sampling_rate))
+                    return
+            
             unfiltered.traces[i].stats.delta = 1. / cfg.sampling_rate
             unfiltered.traces[i].trim(starttime=starttime,
                                       endtime=endtime)
-            if unfiltered.traces[i].stats.npts != 86400 * cfg.sampling_rate:
-                print('FAILURE\n')
 
         unfiltered.traces.detrend('demean')
         unfiltered.traces.detrend('linear')
